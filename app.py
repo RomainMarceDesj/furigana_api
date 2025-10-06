@@ -11,12 +11,49 @@ import pytesseract
 from PIL import Image
 import io
 from pdf2image import convert_from_bytes
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(base_dir, '..', '..'))
+
+# --- NEW DATABASE CONFIGURATION FOR USERS ---
+user_db_path = os.path.join(base_dir, 'users.db') 
+app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{user_db_path}'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False 
+app.secret_key = 'YOUR_VERY_SECRET_KEY_HERE' # REQUIRED for sessions/LoginManager
+
+db = SQLAlchemy(app) # Initialize SQLAlchemy with your Flask app
+
+# --- LOGIN MANAGER SETUP ---
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login' 
+
+class User(UserMixin, db.Model):
+    __tablename__ = 'users'
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    # Store the password as a secure hash, NOT plain text!
+    password_hash = db.Column(db.String(128), nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=True) # Optional field
+    
+    # Method to hash a password
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    # Method to check a password
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+# This function is crucial for Flask-Login to load the user from the session ID
+@login_manager.user_loader
+def load_user(user_id):
+    return db.session.get(User, int(user_id))
 
 db_path = os.path.join(base_dir, 'jmdict.db')
 tokenizer_obj = dictionary.Dictionary().create()
@@ -255,7 +292,51 @@ def ocr():
         print(f"Full traceback: {traceback.format_exc()}")
         return jsonify({"error": f"An unexpected error occurred with the uploaded file: {str(e)}"}), 500
 
+@app.route('/register', methods=['POST'])
+@cross_origin()
+def register():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+    
+    if not username or not password:
+        return jsonify({"error": "Missing username or password"}), 400
 
+    with app.app_context():
+        # Check if user already exists
+        if db.session.execute(db.select(User).filter_by(username=username)).scalar_one_or_none():
+            return jsonify({"error": "User already exists"}), 409
+
+        # Create new user and hash the password
+        new_user = User(username=username)
+        new_user.set_password(password)
+        
+        db.session.add(new_user)
+        db.session.commit()
+
+    return jsonify({"message": "Registration successful"}), 201
+
+@app.route('/login', methods=['POST'])
+@cross_origin()
+def login():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+
+    if not username or not password:
+        return jsonify({"error": "Missing username or password"}), 400
+
+    with app.app_context():
+        user = db.session.execute(db.select(User).filter_by(username=username)).scalar_one_or_none()
+
+        if user is None or not user.check_password(password):
+            return jsonify({"error": "Invalid username or password"}), 401
+
+        # The core Flask-Login call: sets the user as logged in for the session
+        login_user(user) 
+    
+    # You can return user details if needed, but for security, keep it minimal
+    return jsonify({"message": "Login successful", "username": user.username}), 200
 
 @app.route("/analyze", methods=["POST"])
 @cross_origin() # Add this line
@@ -343,6 +424,13 @@ def analyze_text():
 @cross_origin()
 def warmup():
     return jsonify({"status": "warmup successful"})
+
+@app.route('/logout')
+@cross_origin()
+@login_required # Ensures only logged-in users can access this
+def logout():
+    logout_user()
+    return jsonify({"message": "Logout successful"}), 200
 
 @app.route('/health', methods=['GET'])
 @cross_origin()
