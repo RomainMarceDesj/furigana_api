@@ -1,0 +1,16 @@
+{
+  "users": [
+    {
+      "userId": "user123",
+      "kanjiProficiency": [
+        {
+          "unicode": "4E00",
+          "char": "一",
+          "baseDifficulty": -0.3126500600240096,
+          "proficiency": 1.0500000000000005,
+          "timesScanned": 28
+        }
+      ]
+    }
+  ]
+}
